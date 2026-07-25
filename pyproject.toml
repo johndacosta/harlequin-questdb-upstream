@@ -1,42 +1,68 @@
 [project]
+
 name = "harlequin-questdb"
-version = "0.3.3"
-description = "A Harlequin adapter for QuestDB."
-readme = "README.md"
-license = { text = "MIT" }
+version = "0.4.0-rc1"
 requires-python = ">=3.10"
+description = "Harlequin adapter for QuestDB over PGWire"
+authors = [
+    { name = "Rik Huygen" },
+    { name = "John DaCosta", email = "john.dacosta@gmail.com" },
+]
+license = "MIT"
+readme = "README.md"
+keywords = ["sql", "tui", "harlequin", "questdb"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
-    "harlequin>=1.7,<3",
-    "psycopg[binary]>=3.1",
+    "harlequin>=2.5,<3",
+    "psycopg[pool]>=3.2.0,<4",
 ]
 
-[project.urls]
-Repository = "https://github.com/rhuygen/harlequin-questdb"
-Documentation = "https://harlequin.sh"
 
 [project.entry-points."harlequin.adapter"]
+
 questdb = "harlequin_questdb:QuestDBAdapter"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/harlequin_questdb"]
 
 [dependency-groups]
 dev = [
-    "pytest>=7.4",
-    "mypy>=1.7",
-    "ruff>=0.4",
+    "pytest>=9,<10",
 ]
 
-[tool.ruff.lint]
-select = ["A", "B", "E", "F", "I"]
 
-[tool.mypy]
-python_version = "3.10"
-files = ["src/**/*.py", "tests/**/*.py"]
-mypy_path = "src"
-disallow_untyped_defs = true
-check_untyped_defs = true
+[project.urls]
+
+Homepage = "https://harlequin.sh"
+Documentation = "https://github.com/johndacosta/harlequin-questdb/blob/main/docs/USER_GUIDE.md"
+Repository = "https://github.com/johndacosta/harlequin-questdb"
+
+
+[build-system]
+
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[tool.hatch.build.targets.wheel]
+
+packages = ["src/harlequin_questdb"]
+
+
+[tool.hatch.build.targets.sdist]
+
+only-include = [
+    "src",
+    "README.md",
+    "LICENSE",
+    "PUBLISH.md",
+    "pyproject.toml",
+    "docker-compose.yml",
+    "docs",
+    "EXTRACT.md",
+]

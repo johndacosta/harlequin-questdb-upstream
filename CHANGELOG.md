@@ -1,53 +1,27 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## [0.4.0-rc1] - 2026-07-25
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Added (draft — merge proposal with rhuygen/harlequin-questdb)
 
-## [Unreleased]
-
-## [0.3.3] - 2026-07-09
-
-### Added
-
-- Repository and Documentation links under `[project.urls]` in `pyproject.toml`.
-
-## [0.3.2] - 2026-06-30
+- Connection pool with TCP keepalive and reconnect on transient PGWire failures
+- Interactive catalog tree (db → schema → relation → column) with partition and designated-timestamp hints
+- Catalog sidebar interactions (preview, insert columns, SHOW COLUMNS/PARTITIONS)
+- QuestDB dialect completions plus bounded `functions()` introspection
+- Query cancel (`IMPLEMENTS_CANCEL`)
+- `docs/USER_GUIDE.md`, `docs/KNOWN_LIMITATIONS.md`, `docs/MERGE_PROPOSAL.md`
+- `docker-compose.yml` pinned to QuestDB 8.2.2
+- Offline tests with pin fixtures
 
 ### Changed
 
-- Lowered the minimum required Python version from 3.12 to 3.10, in line with Harlequin itself.
+- Safer `table_columns()` introspection (escaped string literals)
+- Backward-compatible `QuestDBAdapter` / `username` kwarg aliases for 0.3.x users
 
-## [0.3.1] - 2026-06-29
+## [0.3.3] - 2026-07-09
 
-- Updated the README file
+- PyPI project URLs (Repository, Documentation) — [rhuygen](https://github.com/rhuygen/harlequin-questdb)
 
-## [0.3.0] - 2026-06-29
+## [0.3.2] - 2026-06-30
 
-### Fixed
-
-- Automatic reconnection when QuestDB closes an idle connection. `QuestDBConnection` now stores the DSN and transparently reconnects on `OperationalError` before retrying the query.
-
-## [0.2.0] - 2026-06-29
-
-### Added
-
-- `connection_id` property on `QuestDBAdapter` for stable catalog and history caching.
-
-## [0.1.0] - 2026-06-27
-
-### Added
-
-- Initial adapter implementation connecting to QuestDB via the PostgreSQL wire protocol (`psycopg`).
-- CLI options: `--host`, `--port`, `--username`, `--password` with QuestDB defaults.
-- Catalog browser populated via QuestDB's `tables()` and `table_columns()` SQL functions.
-- Type label mappings for QuestDB-native types (catalog) and PostgreSQL wire protocol OIDs (query results).
-
-[Unreleased]: https://github.com/tRik/harlequin-questdb/compare/v0.3.3...HEAD
-[0.3.3]: https://github.com/tRik/harlequin-questdb/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/tRik/harlequin-questdb/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/tRik/harlequin-questdb/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/tRik/harlequin-questdb/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/tRik/harlequin-questdb/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/tRik/harlequin-questdb/releases/tag/v0.1.0
+- Initial PyPI release

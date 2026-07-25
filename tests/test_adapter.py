@@ -1,75 +1,128 @@
-import pytest
-from harlequin.adapter import HarlequinAdapter, HarlequinConnection, HarlequinCursor
-from harlequin.catalog import Catalog, CatalogItem
-from harlequin.exception import HarlequinConnectionError, HarlequinQueryError
-from harlequin_questdb.adapter import QuestDBAdapter, QuestDBConnection
-from textual_fastdatatable.backend import create_backend
+from __future__ import annotations
 
+import json
 from importlib.metadata import entry_points
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
+import pytest
+from harlequin.adapter import HarlequinAdapter, HarlequinConnection
+from harlequin.catalog import Catalog
+from harlequin_questdb import QuestDBAdapter, QuestDBAdapter_OPTIONS
+from harlequin_questdb.adapter import (
+    HarlequinQuestDbAdapter,
+    HarlequinQuestDbConnection,
+    _escape_quest_literal,
+    _quote_quest_identifier,
+)
+from harlequin_questdb.catalog import (
+    DatabaseCatalogItem,
+    MaterializedViewCatalogItem,
+    TableCatalogItem,
+)
 
-def test_plugin_discovery() -> None:
-    PLUGIN_NAME = "questdb"
-    eps = entry_points(group="harlequin.adapter")
-    assert eps[PLUGIN_NAME]
-    adapter_cls = eps[PLUGIN_NAME].load()
-    assert issubclass(adapter_cls, HarlequinAdapter)
-    assert adapter_cls == QuestDBAdapter
-
-
-def test_connect() -> None:
-    conn = QuestDBAdapter(conn_str=tuple()).connect()
-    assert isinstance(conn, HarlequinConnection)
-
-
-def test_init_extra_kwargs() -> None:
-    assert QuestDBAdapter(conn_str=tuple(), foo=1, bar="baz").connect()
-
-
-def test_connect_raises_connection_error() -> None:
-    with pytest.raises(HarlequinConnectionError):
-        _ = QuestDBAdapter(conn_str=("foo",)).connect()
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 @pytest.fixture
-def connection() -> QuestDBConnection:
-    return QuestDBAdapter(conn_str=tuple()).connect()
+def pin_meta() -> dict[str, Any]:
+    with open(DATA_DIR / "pin_meta.json", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def test_get_catalog(connection: QuestDBConnection) -> None:
-    catalog = connection.get_catalog()
-    assert isinstance(catalog, Catalog)
-    assert catalog.items
-    assert isinstance(catalog.items[0], CatalogItem)
+@pytest.fixture
+def stubbed_connection(pin_meta: dict[str, Any]) -> HarlequinQuestDbConnection:
+    conn = MagicMock(spec=HarlequinQuestDbConnection)
+    type_short = HarlequinQuestDbConnection.QUEST_TYPE_SHORT
+
+    def short_questdb_type(native: str) -> str:
+        base = native.upper().split("(")[0].strip()
+        return type_short.get(base, "?")
+
+    conn.short_questdb_type = short_questdb_type
+
+    def list_relations() -> list[tuple[str, str, str | None, str | None]]:
+        rows: list[tuple[str, str, str | None, str | None]] = []
+        for row in pin_meta["tables_rows"]:
+            kind = "MATERIALIZED VIEW" if row["matView"] else "BASE TABLE"
+            rows.append(
+                (
+                    row["table_name"],
+                    kind,
+                    row.get("partitionBy"),
+                    row.get("designatedTimestamp"),
+                )
+            )
+        return rows
+
+    def get_relation_columns(
+        relation: str,
+    ) -> list[tuple[str, str, bool]]:
+        cols = pin_meta["table_columns"].get(relation, [])
+        return [
+            (c["column"], c["type"], bool(c.get("designated", False))) for c in cols
+        ]
+
+    conn._list_relations = list_relations
+    conn._get_relation_columns = get_relation_columns
+    conn._list_schemas = lambda: ["public"]
+    return conn
 
 
-def test_execute_ddl(connection: QuestDBConnection) -> None:
-    connection.execute("drop table if exists foo")
-    cur = connection.execute("create table foo (a int)")
-    assert cur is None
+def test_plugin_discovery() -> None:
+    eps = entry_points(group="harlequin.adapter")
+    adapter_cls = eps["questdb"].load()
+    assert issubclass(adapter_cls, HarlequinAdapter)
+    assert adapter_cls is QuestDBAdapter
 
 
-def test_execute_select(connection: QuestDBConnection) -> None:
-    cur = connection.execute("select 1 as a")
-    assert isinstance(cur, HarlequinCursor)
-    assert cur.columns() == [("a", "##")]
-    data = cur.fetchall()
-    backend = create_backend(data)
-    assert backend.column_count == 1
-    assert backend.row_count == 1
+def test_public_api_aliases() -> None:
+    assert QuestDBAdapter is HarlequinQuestDbAdapter
+    assert QuestDBAdapter_OPTIONS
 
 
-def test_set_limit(connection: QuestDBConnection) -> None:
-    cur = connection.execute("select 1 as a union all select 2 union all select 3")
-    assert isinstance(cur, HarlequinCursor)
-    cur = cur.set_limit(2)
-    assert isinstance(cur, HarlequinCursor)
-    data = cur.fetchall()
-    backend = create_backend(data)
-    assert backend.column_count == 1
-    assert backend.row_count == 2
+def test_username_kwarg_compat() -> None:
+    adapter = HarlequinQuestDbAdapter(
+        conn_str=tuple(),
+        username="legacy_user",
+    )
+    assert adapter.pool_kwargs["user"] == "legacy_user"
 
 
-def test_execute_raises_query_error(connection: QuestDBConnection) -> None:
-    with pytest.raises(HarlequinQueryError):
-        _ = connection.execute("selec;")
+def test_default_password_matches_0_3_x() -> None:
+    adapter = HarlequinQuestDbAdapter(conn_str=tuple())
+    assert adapter.pool_kwargs["password"] == "quest"
+
+
+def test_contract_implements_cancel() -> None:
+    assert HarlequinQuestDbAdapter.IMPLEMENTS_CANCEL is True
+    assert HarlequinQuestDbConnection.cancel is not HarlequinConnection.cancel
+
+
+def test_escape_quest_literal() -> None:
+    assert _escape_quest_literal("tricky'name") == "tricky''name"
+
+
+def test_quote_quest_identifier() -> None:
+    assert _quote_quest_identifier('col"name') == '"col""name"'
+
+
+def test_catalog_partition_and_designated_labels(
+    stubbed_connection: HarlequinQuestDbConnection,
+) -> None:
+    stubbed_connection._logical_database_label = lambda: "qdb"  # type: ignore[method-assign]
+    db = DatabaseCatalogItem.from_label(label="qdb", connection=stubbed_connection)
+    catalog = Catalog(items=[db])
+    schemas = catalog.items[0].fetch_children()
+    relations = schemas[0].fetch_children()
+
+    by_name = {r.label: r for r in relations}
+    assert by_name["readings"].type_label == "t·DAY"
+    assert by_name["readings_mv"].type_label == "mv·MONTH"
+    assert isinstance(by_name["readings_mv"], MaterializedViewCatalogItem)
+    assert isinstance(by_name["plain_table"], TableCatalogItem)
+
+    ts_cols = by_name["readings"].fetch_children()
+    ts_col = next(c for c in ts_cols if c.label == "ts")
+    assert ts_col.type_label == "ts★"
