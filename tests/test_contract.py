@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import socket
 import threading
 import time
 from importlib.metadata import entry_points
@@ -128,15 +130,15 @@ def test_failed_connect_reaps_pool_workers() -> None:
     assert elapsed < 20.0
 
 
-def test_check_restores_the_socket_timeout() -> None:
-    timeouts: list[float | None] = []
-
-    class Socket:
-        def gettimeout(self) -> None:
-            return None
-
-        def settimeout(self, value: float | None) -> None:
-            timeouts.append(value)
+def test_check_runs_select_1_on_libpq_socket_fd() -> None:
+    """PGconn.socket is an int fd. The probe must not call gettimeout() on it."""
+    option = socket.TCP_USER_TIMEOUT
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.bind(("127.0.0.1", 0))
+    fd = raw.fileno()
+    assert isinstance(fd, int)
+    before = raw.getsockopt(socket.IPPROTO_TCP, option)
+    seen: dict[str, Any] = {}
 
     class Cursor:
         def __enter__(self) -> Cursor:
@@ -146,18 +148,30 @@ def test_check_restores_the_socket_timeout() -> None:
             return None
 
         def execute(self, sql: str, prepare: bool | None = None) -> None:
-            assert prepare is False
-            assert sql == "select 1"
+            seen["sql"] = sql
+            seen["prepare"] = prepare
+            seen["during"] = raw.getsockopt(socket.IPPROTO_TCP, option)
+            os.fstat(fd)
 
     class Conn:
         closed = False
-        pgconn = type("PG", (), {"socket": Socket()})()
+        pgconn = type("PG", (), {"socket": fd})()
 
         def cursor(self) -> Cursor:
             return Cursor()
 
-    _check(Conn())  # type: ignore[arg-type]
-    assert timeouts == [CHECK_SOCKET_TIMEOUT, None]
+    conn = Conn()
+    try:
+        _check(conn)  # type: ignore[arg-type]
+        os.fstat(fd)
+    finally:
+        after = raw.getsockopt(socket.IPPROTO_TCP, option)
+        raw.close()
+    assert seen["sql"] == "select 1"
+    assert seen["prepare"] is False
+    assert seen["during"] == int(CHECK_SOCKET_TIMEOUT * 1000)
+    assert after == before
+    assert conn.closed is False
 
 
 def test_keepalive_in_conninfo_is_kept() -> None:

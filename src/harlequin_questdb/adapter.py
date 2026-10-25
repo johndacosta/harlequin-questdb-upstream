@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import socket
 from typing import Any, Protocol, Sequence
 
 from harlequin import (
@@ -77,19 +78,66 @@ def _close_pool(pool: Any, timeout: float) -> None:
 
 
 def _check(conn: Connection[Any]) -> None:
+    """Probe a pooled connection before it is handed out.
+
+    ``PGconn.socket`` is the libpq file descriptor, an ``int``, not a Python
+    socket. ``TCP_USER_TIMEOUT`` bounds an unacknowledged ``select 1`` so a
+    half-open connection fails this probe instead of sitting on keepalive
+    timers. The descriptor stays open for libpq.
+    """
     if conn.closed:
         raise OperationalError("pooled QuestDB connection is closed")
-    sock = getattr(getattr(conn, "pgconn", None), "socket", None)
-    previous: float | None = None
-    if sock is not None:
-        previous = sock.gettimeout()
-        sock.settimeout(CHECK_SOCKET_TIMEOUT)
+    fd = _connection_fd(conn)
+    previous = _set_tcp_user_timeout(fd, int(CHECK_SOCKET_TIMEOUT * 1000))
     try:
         with conn.cursor() as cur:
             execute_sql(cur, "select 1")
     finally:
-        if sock is not None:
-            sock.settimeout(previous)
+        if previous is not None:
+            _set_tcp_user_timeout(fd, previous)
+
+
+def _connection_fd(conn: Any) -> int | None:
+    """Return the libpq socket fd. A socket object is used via its fileno."""
+    pgconn = getattr(conn, "pgconn", None)
+    if pgconn is None:
+        return None
+    sock = pgconn.socket
+    if isinstance(sock, int):
+        return sock if sock >= 0 else None
+    fileno = getattr(sock, "fileno", None)
+    if not callable(fileno):
+        return None
+    fd = fileno()
+    if isinstance(fd, int) and fd >= 0:
+        return fd
+    return None
+
+
+def _set_tcp_user_timeout(fd: int | None, milliseconds: int) -> int | None:
+    """Set ``TCP_USER_TIMEOUT`` and return the previous value.
+
+    A socket object built from ``fd`` would close libpq's descriptor on
+    garbage collection. ``detach()`` drops that ownership. ``None`` means the
+    option was not changed.
+    """
+    option = getattr(socket, "TCP_USER_TIMEOUT", None)
+    if fd is None or option is None:
+        return None
+    try:
+        borrowed = socket.socket(fileno=fd)
+    except OSError:
+        logger.debug("QuestDB checkout could not borrow the libpq socket")
+        return None
+    try:
+        previous = borrowed.getsockopt(socket.IPPROTO_TCP, option)
+        borrowed.setsockopt(socket.IPPROTO_TCP, option, milliseconds)
+        return int(previous)
+    except OSError:
+        logger.debug("QuestDB checkout could not set TCP_USER_TIMEOUT")
+        return None
+    finally:
+        borrowed.detach()
 
 
 class QuestDBCursor(HarlequinCursor):
