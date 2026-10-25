@@ -20,6 +20,7 @@ from harlequin_questdb.cli_options import QUESTDB_OPTIONS
 from harlequin_questdb.completions import FUNCTIONS_SQL, base_questdb_completions
 from harlequin_questdb.connect import (
     ConnectConfig,
+    in_flight_dial_seconds,
     recoverable_connection_error,
     redact_password,
     resolve_connect_config,
@@ -58,6 +59,21 @@ def _configure(conn: Connection[Any]) -> None:
 # A half-open socket reports closed=False until TCP gives up. Bound the
 # checkout probe so catalog and reconnect do not sit on keepalive timers.
 CHECK_SOCKET_TIMEOUT = 5.0
+
+# gather() joins each worker in series. One worker means a failed open waits
+# out one dial, then the worker reads StopWorker.
+_POOL_CLOSE_SLACK = 1.0
+
+
+def _close_pool(pool: Any, timeout: float) -> None:
+    """Stop pool threads. ``timeout`` covers one in-flight libpq connect.
+
+    Injected test pools implement ``close()`` with no timeout argument.
+    """
+    try:
+        pool.close(timeout)
+    except TypeError:
+        pool.close()
 
 
 def _check(conn: Connection[Any]) -> None:
@@ -145,13 +161,17 @@ class QuestDBConnection(HarlequinConnection):
                     max_idle=86400.0,
                     max_lifetime=float(86400 * 7),
                     reconnect_timeout=120.0,
+                    num_workers=1,
                 )
                 self.pool = opened
                 self._main_conn = opened.getconn()
             except Exception as exc:
                 if opened is not None:
                     try:
-                        opened.close()
+                        _close_pool(
+                            opened,
+                            in_flight_dial_seconds(config) + _POOL_CLOSE_SLACK,
+                        )
                     except Exception:
                         logger.debug("QuestDB pool close failed after connect error")
                 raise HarlequinConnectionError(
@@ -275,7 +295,9 @@ class QuestDBConnection(HarlequinConnection):
             close = getattr(self._main_conn, "close", None)
             if close is not None:
                 close()
-        self.pool.close()
+        _close_pool(
+            self.pool, in_flight_dial_seconds(self.config) + _POOL_CLOSE_SLACK
+        )
 
     def _logical_database_label(self) -> str:
         worker = self._borrow_worker()

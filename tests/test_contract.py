@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from importlib.metadata import entry_points
 from typing import Any
 
@@ -17,7 +19,11 @@ from harlequin_questdb.adapter import (
     execute_sql,
 )
 from harlequin_questdb.cli_options import QUESTDB_OPTIONS
-from harlequin_questdb.connect import redact_password, resolve_connect_config
+from harlequin_questdb.connect import (
+    in_flight_dial_seconds,
+    redact_password,
+    resolve_connect_config,
+)
 from harlequin_questdb.labels import short_native_type, short_oid_type
 
 
@@ -85,6 +91,41 @@ def test_string_connect_timeout_bounds_pool_wait() -> None:
     missing = QuestDBAdapter(conn_str=("host=prod",))
     assert missing.config.pool_timeout == 30.0
     assert missing.config.pool_kwargs["connect_timeout"] == "30"
+
+
+def test_in_flight_dial_follows_the_string_when_the_pool_wait_is_shorter() -> None:
+    config = resolve_connect_config(
+        ("host=127.0.0.1 port=1 connect_timeout=8",),
+        connect_timeout=1,
+    )
+    assert config.pool_timeout == 1.0
+    assert "connect_timeout" not in config.pool_kwargs
+    assert in_flight_dial_seconds(config) == 8.0
+
+
+def test_in_flight_dial_is_at_least_two_seconds() -> None:
+    config = resolve_connect_config((), connect_timeout=1)
+    assert config.pool_kwargs["connect_timeout"] == "1"
+    assert in_flight_dial_seconds(config) == 2.0
+
+
+def test_failed_connect_reaps_pool_workers() -> None:
+    """A blackhole dial longer than close()'s 5s default must not leave threads."""
+    before = {thread.ident for thread in threading.enumerate()}
+    started = time.monotonic()
+    with pytest.raises(HarlequinConnectionError):
+        QuestDBAdapter(
+            conn_str=("host=127.0.0.1 port=1 connect_timeout=8",),
+            connect_timeout=1,
+        ).connect()
+    elapsed = time.monotonic() - started
+    leaked = [
+        thread.name
+        for thread in threading.enumerate()
+        if thread.ident not in before and thread.is_alive() and "pool-" in thread.name
+    ]
+    assert leaked == []
+    assert elapsed < 20.0
 
 
 def test_check_restores_the_socket_timeout() -> None:
@@ -267,6 +308,7 @@ def test_connect_passes_option_defaults_when_there_is_no_string(
     assert captured["kwargs"]["keepalives_idle"] == "30"
     assert captured["rest"]["max_size"] == 5
     assert captured["rest"]["min_size"] == 1
+    assert captured["rest"]["num_workers"] == 1
 
 
 def test_execute_sql_does_not_prepare() -> None:

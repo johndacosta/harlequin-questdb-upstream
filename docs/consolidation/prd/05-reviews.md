@@ -18,7 +18,7 @@ Re-run the default pytest suite, ruff, and mypy after any blocking fix. The cont
 
 ## Out of scope
 
-The four passes were adversarial, security, performance, and best practices. Blocking findings from those passes were fixed in this tree before the pull request: connection-string redaction for URI userinfo, spaced `password =`, and libpq backslash escapes; retry only on a closed connection or a dead-session phrase; a `connect_timeout` inside a connection string bounds the pool wait; a missing `connect_timeout` is filled so libpq does not keep its long default dial; the checkout `select 1` uses a 5 second socket timeout.
+The four passes were adversarial, security, performance, and best practices. Blocking findings from those passes were fixed in this tree before the pull request: connection-string redaction for URI userinfo, spaced `password =`, and libpq backslash escapes; retry only on a closed connection or a dead-session phrase; a `connect_timeout` inside a connection string bounds the pool wait; a missing `connect_timeout` is filled so libpq does not keep its long default dial; the checkout `select 1` uses a 5 second socket timeout (`CHECK_SOCKET_TIMEOUT`, covered by `test_check_restores_the_socket_timeout`). A failed connect used to return while pool workers were still blocked in `connect()`, because `close()` joins for 5 seconds and a dial can be longer. The pool now uses one worker and waits out that one dial before the error returns (`test_failed_connect_reaps_pool_workers`).
 
 These review notes are not defects to fix in this integration:
 

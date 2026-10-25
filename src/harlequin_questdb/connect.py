@@ -153,6 +153,40 @@ def _from_conninfo(
     )
 
 
+# Libpq raises a connect_timeout below 2 seconds up to about 2 seconds.
+_LIBPQ_MIN_CONNECT_SECONDS = 2.0
+
+
+def in_flight_dial_seconds(config: ConnectConfig) -> float:
+    """How long one libpq connect can still block a pool worker.
+
+    Keyword arguments override a connection string, so the dial uses
+    ``pool_kwargs['connect_timeout']`` when that key is set. Otherwise the
+    string's own ``connect_timeout`` wins, even when the pool wait is shorter.
+    """
+    seconds = _timeout_setting(config.pool_kwargs.get("connect_timeout"))
+    if seconds is None and config.conninfo:
+        try:
+            parsed = conninfo.conninfo_to_dict(config.conninfo)
+        except Exception:
+            parsed = {}
+        seconds = _timeout_setting(parsed.get("connect_timeout"))
+    if seconds is None:
+        seconds = config.pool_timeout
+    if seconds < _LIBPQ_MIN_CONNECT_SECONDS:
+        seconds = _LIBPQ_MIN_CONNECT_SECONDS
+    return seconds
+
+
+def _timeout_setting(raw: object) -> float | None:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def _libpq_timeout(seconds: float) -> str:
     """Libpq wants whole seconds. A zero would wait forever on some builds."""
     whole = int(seconds)
