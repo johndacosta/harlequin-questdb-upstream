@@ -1,0 +1,26 @@
+# PRD: Pool, keepalive, reconnect, cancel
+
+Id: `pr-02-pool`. Requires: `pr-01-contract`.
+
+## Outcome
+
+`QuestDBConnection` uses a `psycopg_pool.ConnectionPool` (`min_size=1`, `max_size=5`) with TCP keepalive defaults (`keepalives`, `keepalives_idle=30`, `keepalives_interval=10`, `keepalives_count=6`) only for keys the connection string does not already set. A check callback runs `select 1` before a pooled connection is handed out. `autocommit` is on.
+
+Reconnect expands the 0.3.0 idle retry. Before a query, a closed main connection is replaced. `execute` reconnects once and retries when the connection object is closed, when the socket raises `BrokenPipeError` or `ConnectionResetError`, or when the error text contains a dead-session phrase such as `server closed the connection` or `connection lost`. A message that only happens to contain the separate words `connection` and `closed` is not retried, so a failed statement is not run twice. The 0.3.0 changelog entry stays; the pool is an expansion of that retry, not the first time reconnect existed.
+
+`QuestDBAdapter.IMPLEMENTS_CANCEL` is true. `cancel` calls `cancel_safe` on the main connection. Connection errors shown to the user redact `password=<secret>` so a conninfo fragment in a driver message is not repeated in full.
+
+## 0.3.x behavior that must survive
+
+- A closed connection is still replaced and the query retried, which 0.3.0 did for `OperationalError` on a closed session.
+- `prepare=False` still applies on the retried attempt.
+- Keepalive defaults must not overwrite keepalive keys the user set in a connection string.
+- Identity defaults must not appear in pool kwargs when a connection string was given (`pr-01-contract`).
+
+## How to test
+
+`tests/test_contract.py` builds `QuestDBConnection` with a fake pool, drives real `execute` and `cancel`, and asserts one retry, `prepare=False`, keepalive gap-fill, bounded pool construction, and password redaction. No live QuestDB.
+
+## Out of scope
+
+Tuning pool size beyond the bounds above. An open-ended performance program. Changing the 0.3.0 changelog wording.

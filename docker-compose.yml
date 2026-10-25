@@ -1,0 +1,10 @@
+# Dev-only QuestDB. The published adapter default host is localhost.
+# This file binds PGWire on 127.0.0.1:8812. Pass --host 127.0.0.1 if needed.
+services:
+  questdb:
+    image: questdb/questdb:8.2.2
+    ports:
+      - "127.0.0.1:8812:8812"
+    environment:
+      QDB_PG_USER: ${QDB_PG_USER:-admin}
+      QDB_PG_PASSWORD: ${QDB_PG_PASSWORD:-quest}
