@@ -18,6 +18,7 @@ from harlequin_questdb.adapter import (
     QuestDBConnection,
     _check,
     _configure,
+    _set_tcp_user_timeout,
     execute_sql,
 )
 from harlequin_questdb.cli_options import QUESTDB_OPTIONS
@@ -132,12 +133,16 @@ def test_failed_connect_reaps_pool_workers() -> None:
 
 def test_check_runs_select_1_on_libpq_socket_fd() -> None:
     """PGconn.socket is an int fd. The probe must not call gettimeout() on it."""
-    option = socket.TCP_USER_TIMEOUT
+    option = getattr(socket, "TCP_USER_TIMEOUT", None)
     raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     raw.bind(("127.0.0.1", 0))
     fd = raw.fileno()
     assert isinstance(fd, int)
-    before = raw.getsockopt(socket.IPPROTO_TCP, option)
+    before = (
+        raw.getsockopt(socket.IPPROTO_TCP, option)
+        if option is not None
+        else None
+    )
     seen: dict[str, Any] = {}
 
     class Cursor:
@@ -150,7 +155,8 @@ def test_check_runs_select_1_on_libpq_socket_fd() -> None:
         def execute(self, sql: str, prepare: bool | None = None) -> None:
             seen["sql"] = sql
             seen["prepare"] = prepare
-            seen["during"] = raw.getsockopt(socket.IPPROTO_TCP, option)
+            if option is not None:
+                seen["during"] = raw.getsockopt(socket.IPPROTO_TCP, option)
             os.fstat(fd)
 
     class Conn:
@@ -165,13 +171,67 @@ def test_check_runs_select_1_on_libpq_socket_fd() -> None:
         _check(conn)  # type: ignore[arg-type]
         os.fstat(fd)
     finally:
-        after = raw.getsockopt(socket.IPPROTO_TCP, option)
+        after = (
+            raw.getsockopt(socket.IPPROTO_TCP, option)
+            if option is not None
+            else None
+        )
         raw.close()
     assert seen["sql"] == "select 1"
     assert seen["prepare"] is False
-    assert seen["during"] == int(CHECK_SOCKET_TIMEOUT * 1000)
-    assert after == before
+    if option is not None:
+        assert seen["during"] == int(CHECK_SOCKET_TIMEOUT * 1000)
+        assert after == before
     assert conn.closed is False
+
+
+def test_check_on_platform_without_tcp_user_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-Linux platforms (macOS, Windows) lack TCP_USER_TIMEOUT; probe still works."""
+    monkeypatch.delattr(socket, "TCP_USER_TIMEOUT", raising=False)
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.bind(("127.0.0.1", 0))
+    fd = raw.fileno()
+    seen: dict[str, Any] = {}
+
+    class Cursor:
+        def __enter__(self) -> Cursor:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def execute(self, sql: str, prepare: bool | None = None) -> None:
+            seen["sql"] = sql
+            seen["prepare"] = prepare
+            os.fstat(fd)
+
+    class Conn:
+        closed = False
+        pgconn = type("PG", (), {"socket": fd})()
+
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    conn = Conn()
+    try:
+        _check(conn)  # type: ignore[arg-type]
+        os.fstat(fd)
+    finally:
+        raw.close()
+    assert seen["sql"] == "select 1"
+    assert seen["prepare"] is False
+    assert conn.closed is False
+
+
+def test_set_tcp_user_timeout_platform_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _set_tcp_user_timeout(None, 5000) is None
+    monkeypatch.delattr(socket, "TCP_USER_TIMEOUT", raising=False)
+    assert _set_tcp_user_timeout(1, 5000) is None
+    assert _set_tcp_user_timeout(-1, 5000) is None
 
 
 def test_keepalive_in_conninfo_is_kept() -> None:
